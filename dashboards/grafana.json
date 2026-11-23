@@ -1,0 +1,103 @@
+{
+  "title": "Distributed LLM Inference Gateway",
+  "uid": "llm-gateway-poc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request p99 / p50 latency",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gateway_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "p99",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(gateway_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "p50",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to first token (p99)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gateway_ttft_seconds_bucket[1m])))",
+          "legendFormat": "TTFT p99",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Output tokens/sec (autoscaling signal)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "gateway_output_tokens_per_second",
+          "legendFormat": "tokens/sec",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prefix cache affinity hit ratio",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(gateway_cache_hits_total[1m])) / clamp_min(sum(rate(gateway_cache_hits_total[1m])) + sum(rate(gateway_cache_misses_total[1m])), 0.001)",
+          "legendFormat": "hit ratio",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Circuit breaker state (1 = open)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "gateway_circuit_state",
+          "legendFormat": "{{worker}}",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Shed requests/sec and retries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(gateway_shed_total[1m]))",
+          "legendFormat": "shed {{reason}}",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        },
+        {
+          "expr": "rate(gateway_retries_total[1m])",
+          "legendFormat": "retries",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+        }
+      ]
+    }
+  ]
+}
