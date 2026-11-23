@@ -81,8 +81,8 @@ model. An 8B Q4_K_M model (~5 GB) fits comfortably in 16 GB unified memory.
 
 ```bash
 brew install llama.cpp
-# Download e.g. Qwen3-8B-Instruct-Q4_K_M.gguf from Hugging Face, then:
-export LLAMA_MODEL_PATH=/path/to/Qwen3-8B-Instruct-Q4_K_M.gguf
+# Download Qwen3-8B-Q4_K_M.gguf (base model) from Qwen/Qwen3-8B-GGUF on Hugging Face, then:
+export LLAMA_MODEL_PATH=/path/to/Qwen3-8B-Q4_K_M.gguf
 make run-real
 ```
 
