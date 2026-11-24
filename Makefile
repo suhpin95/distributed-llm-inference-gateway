@@ -1,4 +1,4 @@
-.PHONY: build test run-mocks run-real infra infra-down k6 clean fmt
+.PHONY: build test run-mocks run-real demo up down infra infra-down k6 clean fmt
 
 build:
 	mkdir -p bin
@@ -17,6 +17,15 @@ run-mocks: build
 
 run-real: build
 	bash scripts/run-real.sh
+
+demo: build
+	bash scripts/demo.sh
+
+up:
+	docker compose up --build
+
+down:
+	docker compose down -v
 
 infra:
 	docker compose -f deploy/docker-compose.yaml up -d

@@ -39,7 +39,8 @@ services:
   prometheus:
     image: prom/prometheus:v3.5.0
     ports:
-      - "9090:9090"
+      # Host 9093 avoids the gateway gRPC (:9090) and Kafka (:9092) ports.
+      - "9093:9090"
     volumes:
       - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
     command:
