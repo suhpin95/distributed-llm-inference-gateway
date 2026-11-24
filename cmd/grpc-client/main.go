@@ -26,7 +26,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	stream, err := gen.NewGatewayServiceClient(conn).Generate(ctx, &gen.GenerateRequest{
 		RequestId: "grpc-demo", TenantId: "default", Model: *model,

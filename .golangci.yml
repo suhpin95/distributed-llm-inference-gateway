@@ -1,0 +1,8 @@
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, and unused.
+  default: standard
+  enable:
+    - misspell
+    - unconvert

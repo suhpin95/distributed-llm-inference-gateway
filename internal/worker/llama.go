@@ -52,7 +52,7 @@ func streamLlama(ctx context.Context, cfg config.WorkerConfig, req *gen.Generate
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return 0, fmt.Errorf("llama.cpp returned %s: %s", resp.Status, raw)
