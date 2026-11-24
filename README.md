@@ -1,7 +1,7 @@
 # Distributed LLM Inference Gateway — POC
 
 [![Go 1.27+](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/suhpin95/distributed-llm-inference-gateway/actions)
+[![CI](https://github.com/suhpin95/distributed-llm-inference-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/suhpin95/distributed-llm-inference-gateway/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A Go POC gateway in front of multiple model servers. It demonstrates token streaming,
@@ -324,6 +324,32 @@ In another terminal, run the k6 load test (install k6 first, for example with
 
 ```bash
 make k6
+```
+
+## Testing and CI
+
+CI runs on every push to `master` and every pull request (`.github/workflows/ci.yml`):
+
+- `gofmt` check, `go vet`, and `golangci-lint` with the config in `.golangci.yml`
+- `go test -race ./...`
+- Docker builds for the gateway and worker images
+
+The suite covers config defaults and overrides, the prefix index, worker cache
+accounting, address parsing, and the routing/resilience paths end to end against
+real gRPC workers:
+
+| Test | What it proves |
+|---|---|
+| `TestStreamingCacheAffinityAndFailover` | A repeated prefix routes to its cache owner, and traffic survives a backend being killed. |
+| `TestRetryBeforeFirstToken` | A pre-token failure is retried on another worker without duplicate output. |
+| `TestFailoverThirtyNineRequestsOneRetry` | 39/39 requests succeed with exactly one retry when a worker rejects its first request. |
+| `TestRoundRobinOverrideSpreadsAcrossWorkers` | `X-Routing-Policy: round-robin` reaches every eligible worker. |
+| `TestTierFallbackToWorkhorse` | A request for an empty tier falls back to `workhorse` (`tier-fallback`). |
+
+Run everything locally with:
+
+```bash
+go test -race ./...
 ```
 
 ## The four proofs

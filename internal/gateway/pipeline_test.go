@@ -18,6 +18,7 @@ import (
 	"github.com/example/distributed-llm-gateway/internal/ring"
 	"github.com/example/distributed-llm-gateway/internal/router"
 	"github.com/example/distributed-llm-gateway/internal/worker"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/grpc"
 )
 
@@ -148,6 +149,169 @@ func TestRetryBeforeFirstToken(t *testing.T) {
 	}
 	if res.WorkerID != "worker-2" || res.Status != "ok" {
 		t.Fatalf("expected success on worker-2 after retry, got %+v", res)
+	}
+}
+
+func TestRoundRobinOverrideSpreadsAcrossWorkers(t *testing.T) {
+	lis1, _ := net.Listen("tcp", "127.0.0.1:0")
+	lis2, _ := net.Listen("tcp", "127.0.0.1:0")
+	s1 := startWorker(lis1, "w1", 0)
+	s2 := startWorker(lis2, "w2", 0)
+	defer s1.Stop()
+	defer s2.Stop()
+
+	cfg := testGatewayConfig(lis1, lis2)
+	metrics := observability.New()
+	rt := router.New(cfg, cache.NewPrefixIndex(nil, cfg.PrefixTTL), metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rt.Start(ctx)
+	waitForHealthy(t, rt, 2)
+
+	svc := NewService(cfg, rt, ratelimit.New(nil, 1000, 2000),
+		adaptive.New(16, 32, 8, time.Second), metrics, nil)
+
+	seen := map[string]bool{}
+	for i := 0; i < 12; i++ {
+		res, err := svc.Execute(ctx, Request{
+			RequestID: fmt.Sprintf("rr-%d", i), TenantID: "default", Model: "workhorse",
+			Prompt: fmt.Sprintf("round robin prompt %d", i), MaxTokens: 2,
+			RoutingPolicy: "round-robin",
+		}, nil)
+		if err != nil {
+			t.Fatalf("execute rr-%d: %v", i, err)
+		}
+		if res.Status != "ok" || res.Route != "round-robin" {
+			t.Fatalf("unexpected result for rr-%d: %+v", i, res)
+		}
+		seen[res.WorkerID] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("round-robin should hit both workers, saw %v", seen)
+	}
+}
+
+func TestTierFallbackToWorkhorse(t *testing.T) {
+	lis, _ := net.Listen("tcp", "127.0.0.1:0")
+	s := startWorker(lis, "w1", 0)
+	defer s.Stop()
+
+	cfg := testGatewayConfig(lis)
+	metrics := observability.New()
+	rt := router.New(cfg, cache.NewPrefixIndex(nil, cfg.PrefixTTL), metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rt.Start(ctx)
+	waitForHealthy(t, rt, 1)
+
+	svc := NewService(cfg, rt, ratelimit.New(nil, 1000, 2000),
+		adaptive.New(8, 16, 4, time.Second), metrics, nil)
+
+	res, err := svc.Execute(ctx, Request{
+		RequestID: "tier-1", TenantID: "default", Model: "secondary",
+		Prompt: "a request for an unavailable tier", MaxTokens: 2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("tier fallback should succeed: %v", err)
+	}
+	if res.Status != "ok" || res.Route != "tier-fallback" || res.ServedModel != "workhorse" {
+		t.Fatalf("unexpected tier fallback result: %+v", res)
+	}
+}
+
+// TestFailoverThirtyNineRequestsOneRetry sends 39 requests against three
+// workers where worker-1 rejects its first Generate. The first request is
+// engineered onto worker-1 so the injected failure is exercised, then retried
+// before any token is emitted. Every request must succeed and the gateway must
+// report exactly one retry.
+func TestFailoverThirtyNineRequestsOneRetry(t *testing.T) {
+	lis1, _ := net.Listen("tcp", "127.0.0.1:0")
+	lis2, _ := net.Listen("tcp", "127.0.0.1:0")
+	lis3, _ := net.Listen("tcp", "127.0.0.1:0")
+	s1 := startWorker(lis1, "w1", 1) // fails its first Generate
+	s2 := startWorker(lis2, "w2", 0)
+	s3 := startWorker(lis3, "w3", 0)
+	defer s1.Stop()
+	defer s2.Stop()
+	defer s3.Stop()
+
+	cfg := testGatewayConfig(lis1, lis2, lis3)
+	metrics := observability.New()
+	rt := router.New(cfg, cache.NewPrefixIndex(nil, cfg.PrefixTTL), metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rt.Start(ctx)
+	waitForHealthy(t, rt, 3)
+
+	svc := NewService(cfg, rt, ratelimit.New(nil, 5000, 5000),
+		adaptive.New(32, 64, 16, time.Second), metrics, nil)
+
+	// Pick a prompt whose consistent-hash owner is worker-1 so the injected
+	// first-request failure is guaranteed to be hit before any token streams.
+	hring := ring.New(128)
+	hring.Set([]string{"worker-1", "worker-2", "worker-3"})
+	prompt, hashes := "", []string(nil)
+	for i := 0; i < 2000; i++ {
+		candidate := fmt.Sprintf("failover prompt %d", i)
+		_, hs := prefix.Hashes(candidate, cfg.BlockSize)
+		if hring.Lookup(hs[len(hs)-1]) == "worker-1" {
+			prompt, hashes = candidate, hs
+			break
+		}
+	}
+	if prompt == "" {
+		t.Fatal("could not find a prompt owned by the failing worker")
+	}
+
+	first, err := svc.Execute(ctx, Request{
+		RequestID: "failover-first", TenantID: "default", Model: "workhorse",
+		Prompt: prompt, PrefixHashes: hashes, MaxTokens: 2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first request should fail over: %v", err)
+	}
+	if first.Status != "ok" || first.WorkerID == "worker-1" {
+		t.Fatalf("first request should retry onto another worker: %+v", first)
+	}
+
+	for i := 1; i < 39; i++ {
+		res, err := svc.Execute(ctx, Request{
+			RequestID: fmt.Sprintf("failover-%d", i), TenantID: "default", Model: "workhorse",
+			Prompt: fmt.Sprintf("failover follow-up %d", i), MaxTokens: 2,
+			RoutingPolicy: "round-robin",
+		}, nil)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		if res.Status != "ok" {
+			t.Fatalf("request %d status = %q, want ok", i, res.Status)
+		}
+	}
+
+	if got := testutil.ToFloat64(metrics.RetriesTotal); got != 1 {
+		t.Fatalf("expected exactly one retry, got %v", got)
+	}
+}
+
+func testGatewayConfig(lis ...net.Listener) config.GatewayConfig {
+	addrs := make([]string, len(lis))
+	for i, l := range lis {
+		addrs[i] = l.Addr().String()
+	}
+	return config.GatewayConfig{
+		WorkerAddrs:             addrs,
+		HealthPeriod:            20 * time.Millisecond,
+		BlockSize:               32,
+		MaxRetries:              3,
+		RetryBase:               time.Millisecond,
+		QueueWait:               time.Second,
+		MaxInFlight:             32,
+		QueueSize:               16,
+		PrefixTTL:               time.Minute,
+		BreakerFailureThreshold: 5,
+		BreakerCooldown:         time.Second,
+		BreakerWindow:           time.Minute,
+		Tenants:                 map[string]string{"dev-key": "default"},
 	}
 }
 
