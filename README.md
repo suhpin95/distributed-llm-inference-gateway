@@ -27,7 +27,7 @@ cannot tell a real llama.cpp worker from a deterministic mock.
 ## Requirements
 
 - Go 1.27+ (`brew install go`), `make`
-- Optional: Docker Desktop (Redis/Kafka/Prometheus), `brew install k6`,
+- Optional: Docker Desktop (one-command `docker compose` stack), `brew install k6`,
   `brew install llama.cpp` for real local inference
 
 ## Quickstart (no GPU, no Docker, no model download)
@@ -72,6 +72,54 @@ make fmt
 make build
 ```
 
+## 60-second demo (no Docker, no model)
+
+```bash
+make demo
+```
+
+`scripts/demo.sh` starts two deterministic mock workers plus the gateway on
+`:8080/:9090/:9091`, then:
+
+1. streams a chat completion over SSE,
+2. repeats the same prompt so the gateway routes to the worker that already holds
+   the prefix and `usage.cached_tokens` is non-zero,
+3. kills that worker and retries the same prompt, showing a successful failover
+   and a non-zero `gateway_retries_total` delta.
+
+It prints the routing metadata and exits non-zero if either the cache-reuse or the
+retry assertion fails. Stop any other gateway/workers first (ports 8080, 9090,
+9091, 9101, 9102 must be free).
+
+Expected tail:
+
+```
+Demo complete
+  streaming:     OK
+  prefix reuse:  cached_tokens=64
+  failover:      served_by=worker-2 route=least-loaded retries=1
+```
+
+## One-command Docker stack
+
+```bash
+docker compose up --build
+# or: make up
+```
+
+This starts the gateway, two mock workers, Redis, Prometheus, and Grafana:
+
+| Service | URL |
+|---|---|
+| Gateway (OpenAI-compatible HTTP/SSE) | http://127.0.0.1:8080 |
+| Gateway gRPC | `localhost:9090` |
+| Gateway metrics | http://127.0.0.1:9091/metrics |
+| Prometheus | http://127.0.0.1:9093 |
+| Grafana (anonymous admin) | http://127.0.0.1:3000 |
+
+The Prometheus datasource and the gateway dashboard are provisioned
+automatically. Stop the stack with `docker compose down -v` (or `make down`).
+
 ## Real local model (M2 Pro / 16 GB)
 
 vLLM requires CUDA, so local inference uses **llama.cpp (Metal)** with a quantized
@@ -96,10 +144,13 @@ configured: a 16 GB M2 Pro cannot host one, and none is simulated. The `tier=hos
 syntax in `WORKER_ADDRS` is generic, so a hosted endpoint can be added later without
 gateway changes.
 
-## Infrastructure (optional)
+## Infrastructure (optional, host-run gateway)
+
+When you run the gateway on the host (for example `make run-mocks`) and want Redis,
+Kafka, and Prometheus alongside it:
 
 ```bash
-make infra        # Redis :6379, Kafka :9092, Prometheus :9090
+make infra        # Redis :6379, Kafka :9092, Prometheus :9093
 REDIS_ADDR=localhost:6379 KAFKA_BROKERS=localhost:9092 make run-mocks
 ```
 

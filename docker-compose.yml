@@ -1,0 +1,105 @@
+name: llm-gateway-poc
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 20
+
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      WORKER_ID: worker-1
+      WORKER_GRPC_ADDR: ":9101"
+      WORKER_MODEL: workhorse
+      WORKER_MODE: mock
+      WORKER_CAPACITY: "8"
+      WORKER_TOKENS_PER_SEC: "45"
+    ports:
+      - "9101:9101"
+
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      WORKER_ID: worker-2
+      WORKER_GRPC_ADDR: ":9102"
+      WORKER_MODEL: workhorse
+      WORKER_MODE: mock
+      WORKER_CAPACITY: "8"
+      WORKER_TOKENS_PER_SEC: "30"
+    ports:
+      - "9102:9102"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    environment:
+      WORKER_ADDRS: "worker-1:9101,worker-2:9102"
+      REDIS_ADDR: "redis:6379"
+      GATEWAY_HTTP_ADDR: ":8080"
+      GATEWAY_GRPC_ADDR: ":9090"
+      GATEWAY_METRICS_ADDR: ":9091"
+      GATEWAY_TENANTS: "dev-key:default"
+      TENANT_RATE: "5000"
+      TENANT_BURST: "5000"
+      MAX_IN_FLIGHT: "64"
+      QUEUE_SIZE: "32"
+      HEALTH_PERIOD: "1s"
+      BREAKER_FAILURE_THRESHOLD: "2"
+      BREAKER_COOLDOWN: "2s"
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+      - "9091:9091"
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker-1:
+        condition: service_started
+      worker-2:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./deploy/prometheus.compose.yaml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      # Host 9093 avoids the gateway gRPC (:9090) and Kafka (:9092) ports.
+      - "9093:9090"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards/grafana.json:/var/lib/grafana/dashboards/grafana.json:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
