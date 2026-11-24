@@ -144,10 +144,7 @@ configured: a 16 GB M2 Pro cannot host one, and none is simulated. The `tier=hos
 syntax in `WORKER_ADDRS` is generic, so a hosted endpoint can be added later without
 gateway changes.
 
-## Infrastructure (optional, host-run gateway)
-
-When you run the gateway on the host (for example `make run-mocks`) and want Redis,
-Kafka, and Prometheus alongside it:
+## Infrastructure (optional)
 
 ```bash
 make infra        # Redis :6379, Kafka :9092, Prometheus :9093
