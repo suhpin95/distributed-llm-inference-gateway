@@ -3,7 +3,7 @@
 # all behind the same gateway. Set LLAMA_MODEL_PATH to a GGUF file first.
 #
 #   brew install llama.cpp
-#   export LLAMA_MODEL_PATH=/path/to/Qwen3-8B-Instruct-Q4_K_M.gguf
+#   export LLAMA_MODEL_PATH=/path/to/Qwen3-8B-Q4_K_M.gguf
 #   make run-real
 set -euo pipefail
 cd "$(dirname "$0")/.."

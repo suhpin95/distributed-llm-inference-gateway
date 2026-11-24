@@ -284,11 +284,24 @@ llama.cpp so repeated prefixes actually reuse KV blocks; the gateway's own prefi
 index additionally prefers the worker that already holds a prefix.
 If `LLAMA_MODEL_PATH` is unset, `make run-real` starts the mock path instead.
 
-For a lightweight real-inference smoke test, use `Qwen3-0.6B-Q4_K_M.gguf` from
-`Qwen/Qwen3-0.6B-GGUF` (~0.4 GB) instead of the 8B model. No frontier-class model is
-configured: a 16 GB M2 Pro cannot host one, and none is simulated. The `tier=host:port`
-syntax in `WORKER_ADDRS` is generic, so a hosted endpoint can be added later without
-gateway changes.
+For a lightweight real-inference proof, use `Qwen3-0.6B-Q8_0.gguf` from
+`Qwen/Qwen3-0.6B-GGUF` (~0.64 GB), the only quantization published in that repo:
+
+```bash
+mkdir -p models
+curl -L -o models/Qwen3-0.6B-Q8_0.gguf \
+  https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
+make ttft
+```
+
+`make ttft` starts llama.cpp, a single llama-mode worker, and the gateway, then
+measures cold (full prefill) versus warm (KV-cache reuse) TTFT. See
+[Measured results — real inference](#measured-results--real-inference) for the
+numbers produced on this machine.
+
+No frontier-class model is configured: a 16 GB M2 Pro cannot host one, and none is
+simulated. The `tier=host:port` syntax in `WORKER_ADDRS` is generic, so a hosted
+endpoint can be added later without gateway changes.
 
 ## Infrastructure (optional)
 
@@ -352,7 +365,7 @@ Run everything locally with:
 go test -race ./...
 ```
 
-## The four proofs
+## The proofs
 
 | Proof | How to reproduce |
 |---|---|
@@ -360,6 +373,7 @@ go test -race ./...
 | **Backend dies** | `bash scripts/failover-demo.sh` — kills worker-2 mid-traffic, then prints breaker states, retries, route decisions. |
 | **Cache hit improvement** | `bash scripts/proof.sh` — runs identical k6 workloads with `X-Routing-Policy: round-robin` and `smart`, printing cache hit counters and p99. |
 | **Load shedding** | Raise k6 target or lower `MAX_IN_FLIGHT`; watch `gateway_shed_total` climb while p99 stays bounded and clients get `429 + Retry-After`. |
+| **Real-inference TTFT** | Download `Qwen3-0.6B-Q8_0.gguf`, then `make ttft` — starts llama.cpp + one real worker and prints cold vs warm TTFT. |
 
 Expected behavior: smart routing concentrates shared prefixes on few workers,
 raising `gateway_cache_hits_total` and lowering TTFT/p99 versus round-robin;
@@ -389,7 +403,27 @@ The dashboard panels cover request p50/p99, TTFT p99, output tokens/sec,
 prefix-cache hit ratio, circuit-breaker state, and shed/retry rates. Import
 `dashboards/grafana.json` manually if you run Prometheus outside the compose stack.
 
-## Measured results (mock workers, not real inference)
+## Measured results — real inference
+
+Measured on an **Apple M2 Pro (16 GB unified memory)** with **Qwen3-0.6B-Q8_0.gguf**
+(610 MB) served by **llama.cpp with Metal**, one llama-mode worker behind the
+gateway, and `bash scripts/ttft-proof.sh` (5 trials, `max_tokens=8`, ~1.1k-token
+prompts). A cold request uses a fresh prompt (full prefill); the warm request repeats
+the identical prompt so llama.cpp reuses KV blocks (`cache_prompt: true`). TTFT is
+measured client-side from request start to the first content token.
+
+The latest 5-trial run:
+
+| Cold median | Warm median | Cold p95 | Warm p95 | Reduction |
+|---:|---:|---:|---:|---:|
+| 115.6 ms | 8.3 ms | 121.6 ms | 8.4 ms | 93% (13.9×) |
+
+Warm TTFT is **~93% lower (13.9× faster)** than cold. The warm
+non-streaming probe reported `cached_tokens=1152`, `route=cache`, `worker=worker-1`,
+confirming both the gateway's prefix affinity and llama.cpp's KV reuse. These are
+single-request, single-worker numbers on one machine, not a throughput benchmark.
+
+## Measured results — mock workers
 
 All figures below were measured on an **Apple M2 Pro (16 GB unified memory)** with
 `make run-mocks` (three deterministic Go mock workers) and `make k6` (ramp 0→100 VUs,
@@ -405,9 +439,7 @@ benchmarks.
 | Smart routing vs round-robin | **+7.5%** | `scripts/proof.sh`, same workload, both policies |
 | p99 latency | **975 ms** | k6 `http_req_duration p(99)` under the same load |
 
-Reproduce them with the commands in [The four proofs](#the-four-proofs). A
-real-inference TTFT comparison with Qwen3-0.6B-GGUF on llama.cpp/Metal is a separate
-follow-up; no real-model latency numbers are claimed here.
+Reproduce them with the commands in [The proofs](#the-proofs).
 
 ## Configuration
 
