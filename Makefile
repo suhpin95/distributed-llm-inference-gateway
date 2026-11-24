@@ -1,4 +1,4 @@
-.PHONY: build test run-mocks run-real demo up down infra infra-down k6 clean fmt
+.PHONY: build test run-mocks run-real demo ttft up down infra infra-down k6 clean fmt
 
 build:
 	mkdir -p bin
@@ -20,6 +20,9 @@ run-real: build
 
 demo: build
 	bash scripts/demo.sh
+
+ttft: build
+	bash scripts/ttft-proof.sh
 
 up:
 	docker compose up --build
