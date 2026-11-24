@@ -16,7 +16,7 @@ client (curl / k6 / gRPC)
 │ metrics (Prometheus) + request log (Kafka)                       │
 └──────────────────────────────────────────────────────────────────┘
    ▼
-WorkerService (gRPC): mock workers | llama.cpp worker agent | future frontier stub
+WorkerService (gRPC): deterministic mock workers | llama.cpp worker agent (Metal)
    ▼
 Redis (rate limits + prefix index) · Kafka (logs) · K8s KEDA/HPA on tokens/sec
 ```
@@ -50,8 +50,6 @@ curl -N -X POST http://127.0.0.1:8080/v1/chat/completions \
 # Non-streaming, with routing metadata in the response
 curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' -H 'Authorization: Bearer dev-key' \
-
-  
   -d '{"model":"workhorse","messages":[{"role":"user","content":"Explain prefix caching"}]}'
 
 # Admin view of workers, breakers and cache hits
@@ -89,10 +87,14 @@ make run-real
 `scripts/run-real.sh` starts llama.cpp on `:8081`, one llama worker agent on `:9101`,
 and two mock replicas on `:9102/:9103`. The worker sends `cache_prompt: true` to
 llama.cpp so repeated prefixes actually reuse KV blocks; the gateway's own prefix
-index additionally prefers the worker that already holds a prefix. The `frontier`
-tier (Opus-analogue) is intentionally a **config stub** for now — no hosted API is
-wired in; see `WORKER_ADDRS` with `tier=host:port` entries to add one later.
+index additionally prefers the worker that already holds a prefix.
 If `LLAMA_MODEL_PATH` is unset, `make run-real` starts the mock path instead.
+
+For a lightweight real-inference smoke test, use `Qwen3-0.6B-Q4_K_M.gguf` from
+`Qwen/Qwen3-0.6B-GGUF` (~0.4 GB) instead of the 8B model. No frontier-class model is
+configured: a 16 GB M2 Pro cannot host one, and none is simulated. The `tier=host:port`
+syntax in `WORKER_ADDRS` is generic, so a hosted endpoint can be added later without
+gateway changes.
 
 ## Infrastructure (optional)
 
@@ -146,13 +148,33 @@ moves to survivors, and pre-first-token failures are retried on another worker.
 
 `dashboards/grafana.json` can be imported into Grafana with a Prometheus datasource.
 
+## Measured results (mock workers, not real inference)
+
+All figures below were measured on an **Apple M2 Pro (16 GB unified memory)** with
+`make run-mocks` (three deterministic Go mock workers) and `make k6` (ramp 0→100 VUs,
+80% shared prefixes). The mocks emit synthetic tokens and simulate KV-cache hits;
+**no model was loaded and no GPU was used**. These numbers demonstrate the gateway's
+routing and admission behaviour only — they are **not** real-model inference
+benchmarks.
+
+| Metric | Result | Source |
+|---|---|---|
+| Throughput | **71.3 req/s** | k6 `http_reqs` at peak load |
+| Cache hit rate | **79%** | `gateway_cache_hits_total / (hits + misses)` |
+| Smart routing vs round-robin | **+7.5%** | `scripts/proof.sh`, same workload, both policies |
+| p99 latency | **975 ms** | k6 `http_req_duration p(99)` under the same load |
+
+Reproduce them with the commands in [The four proofs](#the-four-proofs). A
+real-inference TTFT comparison with Qwen3-0.6B-GGUF on llama.cpp/Metal is a separate
+follow-up; no real-model latency numbers are claimed here.
+
 ## Configuration
 
 All settings are environment variables. Key knobs:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WORKER_ADDRS` | `localhost:9101,...` | Workers; use `tier=host:port` to name a tier (e.g. `frontier=`). |
+| `WORKER_ADDRS` | `localhost:9101,...` | Workers; optional `tier=host:port` names a tier (none configured by default). |
 | `GATEWAY_TENANTS` | `dev-key:default` | API key → tenant map. |
 | `TENANT_RATE` / `TENANT_BURST` | `25` / `50` | Per-tenant token bucket. |
 | `MAX_IN_FLIGHT` / `QUEUE_SIZE` / `QUEUE_WAIT` | `64` / `32` / `500ms` | Admission control and shedding. |
@@ -188,7 +210,8 @@ Adapter and point an `HorizontalPodAutoscaler` at it.
 - **Mocks are deterministic** so k6 results are reproducible. The real llama.cpp
   worker is for end-to-end fidelity; use several GPU hosts/vLLM for a production
   version of the multi-replica story.
-- **Frontier tier** is a config stub by design; revisit when a hosted open-model
-  endpoint is chosen.
+- **No frontier tier is configured**: the local M2 Pro cannot host a frontier-class
+  model and no hosted endpoint is wired in. Tier routing is generic
+  (`tier=host:port`) and falls back to `workhorse` when a tier has no healthy workers.
 - The POC uses in-process metrics on `:9091` and a separate HTTP mux on `:8080`;
   no service mesh or TLS is included.
